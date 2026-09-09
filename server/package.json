@@ -1,0 +1,35 @@
+{
+  "name": "keyless-recovery-server",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -b",
+    "typecheck": "tsc -b --noEmit"
+  },
+  "dependencies": {
+    "@nihilium-recovery/condition-zkemail": "file:../../recovery-sdk/packages/adapters/condition-zkemail",
+    "@nihilium-recovery/core": "file:../../recovery-sdk/packages/core",
+    "@nihilium-recovery/key-evm": "file:../../recovery-sdk/packages/adapters/key-evm",
+    "@nihilium-recovery/nihilium": "file:../../recovery-sdk/packages/nihilium",
+    "@nihilium-recovery/onchain-evm": "file:../../recovery-sdk/onchain/evm",
+    "@nihilium-recovery/resolver-dkim": "file:../../recovery-sdk/packages/adapters/resolver-dkim",
+    "@nihilium-recovery/storage-local": "file:../../recovery-sdk/packages/adapters/storage-local",
+    "@nihilium/client-sdk": "^0.7.1",
+    "@privy-io/node": "^0.34.0",
+    "@zerodev/ecdsa-validator": "^5.4.9",
+    "@zerodev/sdk": "^5.5.10",
+    "cors": "^2.8.5",
+    "dotenv": "^17.4.2",
+    "express": "^4.21.2",
+    "viem": "^2.56.0"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/node": "^24.13.3",
+    "tsx": "^4.19.2",
+    "typescript": "~5.7.0"
+  }
+}
