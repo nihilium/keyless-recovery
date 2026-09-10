@@ -46,7 +46,9 @@ function idb<T>(mode: IDBTransactionMode, fn: (store: IDBObjectStore) => IDBRequ
 
 /** Extra context the vault needs to answer "is there a recovery for this email?" later. */
 export interface SealPublishContext {
-  email: string;
+  /** Every guardian email, ordered to match the seal's member indices. */
+  emails: string[];
+  threshold: number;
   userId: string;
   smartAccount: string;
   recoveryOwner: string;
@@ -103,6 +105,16 @@ export async function lookupSealByEmail(email: string) {
   const res = await fetch(`${BACKEND_URL}/api/seals/lookup?email=${encodeURIComponent(email)}`);
   if (!res.ok) throw new Error('Could not reach the seal vault. Is `npm run dev:server` running?');
   return (await res.json()) as
-    | { found: true; userId: string; vaultId: string; smartAccount: string; recoveryOwner: string; epoch?: number }
+    | {
+        found: true;
+        userId: string;
+        vaultId: string;
+        smartAccount: string;
+        recoveryOwner: string;
+        epoch?: number;
+        /** The guardian set, ordered to match the seal's Shamir member indices. */
+        emails?: string[];
+        threshold?: number;
+      }
     | { found: false };
 }

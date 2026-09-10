@@ -114,10 +114,51 @@ email and waits for a reply. There's no simulated fast-path; see plan.md for why
 ## Recovery, and the one-seal-per-account rule
 
 Recovery is reachable from the sign-in screen ("I lost my credentials") **without signing in** —
-that's the point: you may have no session at all. It asks for two things: the email the account
-registered, and **the address that should own the account afterwards**. Recovery installs a new
-signing key on the recovered account owned by that address, so it is named explicitly rather than
-inferred from whatever session happens to be open.
+that's the point: you may have no session at all. It asks for two things: any *one* of the emails
+the account registered, and **the address that should own the account afterwards**. Recovery
+installs a new signing key on the recovered account owned by that address, so it is named
+explicitly rather than inferred from whatever session happens to be open.
+
+If the account is protected by more than one guardian, the lookup is followed by a third question:
+**which k of them to use**. See "Guardian sets" below.
+
+## Guardian sets — 1, 3 or 5 emails
+
+Setup offers three gates, and they differ in what they survive rather than in how they work:
+
+| Choice | Gate | Setup cost | Recovery cost |
+|---|---|---|---|
+| 1 email | 1-of-1 | 1 paid seal | 1 email round trip; no redundancy |
+| 3 emails | 2-of-3 | 3 paid seals | 2 concurrent round trips; survives 1 lost inbox |
+| 5 emails | 3-of-5 | 5 paid seals | 3 concurrent round trips; survives 2 lost inboxes |
+
+All three run through `@nihilium-recovery/condition-quorum`, which Shamir-splits the root secret and
+seals one share behind each email. **A quorum flattens to one seal and one recovery key**, which is
+why none of this touches the on-chain module: it still stores exactly one `recoveryOwner`, the
+`vaultId` is still the Privy user id, and IndexedDB still holds one blob per account.
+
+The single-email case is a genuine 1-of-1 quorum, not a bypass — one code path for all three. The
+SDK originally refused `k = 1` outright, since at threshold 1 every Shamir share *is* the secret;
+that was relaxed to permit **1-of-1 only**, with 1-of-n for n > 1 still refused on both write and
+read. See `../recovery-sdk/packages/shamir/src/shamir.ts`.
+
+Two consequences worth knowing:
+
+- **Sealing is paid, per guardian, and sends no email.** The human-in-the-loop round trip happens
+  only at recovery. A run interrupted at guardian 4 of 5 resumes without re-buying the first three,
+  but only within the same tab — the root secret is held in memory and never written to
+  `localStorage`, so a page reload re-pays rather than persisting a secret.
+- **Guardians must be distinct addresses.** The quorum enforces distinct member *indices*, not
+  distinct identities, so three copies of one address would pass every check downstream and produce
+  a "2-of-3" with a single point of failure. The app rejects duplicates itself.
+
+There are now **three** different thresholds in play, and they are not the same thing:
+
+1. `VITE_NIHILIUM_THRESHOLD` — Nihilium's *processor* k-of-n, who runs the sealing ceremony. The
+   public registry lists one processor, so this stays `1`.
+2. The **guardian** quorum above — which humans can recover.
+3. `resumeThreshold` in the graduated veto — which guardians can resume a paused recovery. Still
+   1-of-1 in this demo.
 
 **Rotating the recovery key.** The module stores a single `recoveryOwner`, and `onInstall` reverts
 with `AlreadyInstalled` if a config already exists — there is no setter. So replacing a recovery key

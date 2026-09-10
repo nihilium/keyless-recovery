@@ -1,10 +1,18 @@
-import { useEffect, useState } from 'react';
+import { Fragment, useEffect, useState } from 'react';
 import { useAppAuth } from '../auth/login';
 import { useAppSmartAccount } from '../smartAccount/SmartAccountContext';
 import { useKernelSmartWallet } from '../smartAccount/useKernelSmartWallet';
 import { useRecoveryProvider, RECOVERY_PROVIDER_CAPABILITIES } from '../recovery/RecoveryContext';
 import { installRecoveryModule, replaceRecoveryModule, fetchVetoConfig } from '../recovery/installRecoveryModule';
-import { makeEmailCondition } from '../recovery/conditions/EmailCondition';
+import {
+  makeEmailCondition,
+  findDuplicateEmail,
+  normalizeEmail,
+  GUARDIAN_PRESETS,
+  type GuardianPreset,
+} from '../recovery/conditions/EmailCondition';
+import { findRecoveryIndexEntryByAccount } from '../recovery/browserRecoveryIndex';
+import { useEmailDomainChecks, REGISTER_EMAIL, type DomainCheck } from '../recovery/useEmailDomainChecks';
 import { makeWorldIdCondition } from '../recovery/conditions/WorldIdCondition';
 import { truncateAddress } from './Identicon';
 import { readProtection, VETO_STATE_LABELS, type OnChainProtection } from '../recovery/onchain';
@@ -17,7 +25,20 @@ interface Guardians {
   pauseAuthority: string;
   abortAuthority: string;
   resumeMembers: string[];
-  timelockBlocks: string;
+  timelockSeconds: string;
+}
+
+/** "60 seconds" / "4 minutes" / "2 hours" — the veto clock is wall-clock, so show it as a duration. */
+function formatDuration(seconds: string): string {
+  const total = Number(seconds);
+  if (!Number.isFinite(total) || total <= 0) return `${seconds} seconds`;
+  for (const [unit, size] of [['hour', 3600], ['minute', 60]] as const) {
+    if (total >= size && total % size === 0) {
+      const n = total / size;
+      return `${n} ${unit}${n === 1 ? '' : 's'}`;
+    }
+  }
+  return `${total} second${total === 1 ? '' : 's'}`;
 }
 
 export function RecoveryCard({ onRegistered }: { onRegistered: (email: string | null) => void }) {
@@ -27,7 +48,12 @@ export function RecoveryCard({ onRegistered }: { onRegistered: (email: string | 
   const { client: kernelClient, smartWalletType, supportsModules } = useKernelSmartWallet();
 
   const [tab, setTab] = useState<ConditionTab>('email');
-  const [email, setEmail] = useState('');
+  /** Which gate the user picked: n guardian emails, k of which must cooperate. */
+  const [preset, setPreset] = useState<GuardianPreset>(GUARDIAN_PRESETS[1]);
+  /** One entry per guardian, ORDERED — position becomes the Shamir member index at seal time. */
+  const [emails, setEmails] = useState<string[]>(() => Array(GUARDIAN_PRESETS[1].n).fill(''));
+  /** The registered gate, for the protected view. Browser-local; null if set up elsewhere. */
+  const [gate, setGate] = useState<{ emails: string[]; threshold: number } | null>(null);
   const [nullifierHash, setNullifierHash] = useState('');
   const [status, setStatus] = useState<Status>('idle');
   const [error, setError] = useState<string | null>(null);
@@ -40,10 +66,35 @@ export function RecoveryCard({ onRegistered }: { onRegistered: (email: string | 
   /** "replacing" swaps the protected card back into the form, for rotating the recovery key. */
   const [mode, setMode] = useState<Mode>('view');
 
-  // Prefill from the login identity, but only as a starting point — the user always confirms it.
+  // Prefill the first guardian from the login identity, but only as a starting point — the user
+  // always confirms it.
   useEffect(() => {
-    if (auth.user?.loginEmail && !email) setEmail(auth.user.loginEmail);
-  }, [auth.user?.loginEmail, email]);
+    const loginEmail = auth.user?.loginEmail;
+    if (!loginEmail) return;
+    setEmails((prev) => (prev[0] ? prev : [loginEmail, ...prev.slice(1)]));
+  }, [auth.user?.loginEmail]);
+
+  // The gate isn't on-chain — the module records one recovery key and nothing about what guards it
+  // — so recover it from this browser's index when the card mounts against a protected account.
+  useEffect(() => {
+    if (!smartAccount) return;
+    const entry = findRecoveryIndexEntryByAccount(smartAccount);
+    if (entry) setGate({ emails: entry.emails, threshold: entry.threshold });
+  }, [smartAccount]);
+
+  function choosePreset(next: GuardianPreset) {
+    setPreset(next);
+    // Keep what was already typed; grow or shrink around it.
+    setEmails((prev) => Array.from({ length: next.n }, (_, i) => prev[i] ?? ''));
+  }
+
+  const duplicateEmail = findDuplicateEmail(emails.filter(Boolean));
+  const emailsComplete = emails.every((e) => e.trim().length > 0);
+
+  // Asked before sealing because this is the only moment it can help: a share sealed against a
+  // domain zkEmail cannot prove is a share nobody can ever open, and in a 2-of-3 that silently
+  // costs the redundancy the user just paid for.
+  const domains = useEmailDomainChecks(emails);
 
   // Protection lives on-chain, so re-read it whenever the account changes or we finish installing.
   useEffect(() => {
@@ -69,7 +120,7 @@ export function RecoveryCard({ onRegistered }: { onRegistered: (email: string | 
           pauseAuthority: c.pauseAuthority,
           abortAuthority: c.abortAuthority,
           resumeMembers: c.resumeMembers,
-          timelockBlocks: c.timelockBlocks,
+          timelockSeconds: c.timelockSeconds,
         }),
       )
       .catch(() => setGuardians(null));
@@ -97,7 +148,8 @@ export function RecoveryCard({ onRegistered }: { onRegistered: (email: string | 
     setStatus('sealing');
     setError(null);
     try {
-      const condition = tab === 'email' ? makeEmailCondition(email) : makeWorldIdCondition(nullifierHash);
+      const condition =
+        tab === 'email' ? makeEmailCondition(emails, preset.k) : makeWorldIdCondition(nullifierHash);
       const { providerMetadata } = await provider.register({
         account: { userId: auth.user.userId, eoa, smartAccount: smartAccount ?? address },
         condition,
@@ -131,8 +183,13 @@ export function RecoveryCard({ onRegistered }: { onRegistered: (email: string | 
 
   function finish() {
     setStatus('done');
-    setRegisteredEmail(tab === 'email' ? email : null);
-    onRegistered(tab === 'email' ? email : null);
+    // Normalized, so the protected view shows the same addresses the seal and index recorded.
+    const normalized = emails.map(normalizeEmail);
+    const primary = tab === 'email' ? normalized[0]! : null;
+    if (tab === 'email') setGate({ emails: normalized, threshold: preset.k });
+    setRegisteredEmail(primary);
+    // Only a prefill for the dev loss lab, so the first guardian is as good as any.
+    onRegistered(primary);
   }
 
   async function retryInstall() {
@@ -156,10 +213,23 @@ export function RecoveryCard({ onRegistered }: { onRegistered: (email: string | 
           <span className="pill pill--ok">Protected</span>
         </div>
         <p className="recovery-card__lede">
-          This account can be recovered by proving control of{' '}
-          <strong>{registeredEmail ?? 'the registered email'}</strong> — even from a brand-new device
-          with a brand-new signing key.
+          {gate && gate.threshold > 1 ? (
+            <>
+              This account can be recovered by proving control of{' '}
+              <strong>
+                any {gate.threshold} of {gate.emails.length} guardian emails
+              </strong>{' '}
+              — even from a brand-new device with a brand-new signing key.
+            </>
+          ) : (
+            <>
+              This account can be recovered by proving control of{' '}
+              <strong>{gate?.emails[0] ?? registeredEmail ?? 'the registered email'}</strong> — even
+              from a brand-new device with a brand-new signing key.
+            </>
+          )}
         </p>
+        {gate && <GuardianGate gate={gate} />}
         {onChain && (
           <dl className="recovery-card__facts">
             <div>
@@ -231,35 +301,127 @@ export function RecoveryCard({ onRegistered }: { onRegistered: (email: string | 
         </div>
       )}
 
-      <form onSubmit={handleSubmit} className="field-row">
+      {tab === 'email' && (
+        <div className="gate-picker">
+          {GUARDIAN_PRESETS.map((option) => (
+            <button
+              key={option.n}
+              type="button"
+              className={preset.n === option.n ? 'gate-option gate-option--active' : 'gate-option'}
+              onClick={() => choosePreset(option)}
+              disabled={status !== 'idle'}
+            >
+              <span className="gate-option__title">
+                {option.n} {option.n === 1 ? 'email' : 'emails'}
+              </span>
+              <span className="gate-option__gate">
+                {option.k} of {option.n} to recover
+              </span>
+              <span className="gate-option__cost">
+                {option.n === 1
+                  ? 'No redundancy — lose that inbox and the account is gone.'
+                  : `Survives losing ${option.n - option.k} of them.`}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      <form onSubmit={handleSubmit} className={tab === 'email' ? 'gate-form' : 'field-row'}>
         {tab === 'email' ? (
-          <input
-            type="email"
-            required
-            placeholder="you@example.com"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-          />
+          <>
+            {emails.map((value, i) => (
+              // The verdict sits outside the label on purpose: it carries a "check again" button,
+              // and any control inside a <label> also activates the labelled input when clicked.
+              <Fragment key={i}>
+                <label className="field">
+                  <span className="field__label">
+                    {preset.n === 1 ? 'Recovery email' : `Guardian ${i + 1} of ${preset.n}`}
+                  </span>
+                  <input
+                    type="email"
+                    required
+                    placeholder="you@example.com"
+                    value={value}
+                    onChange={(e) =>
+                      setEmails((prev) => prev.map((v, j) => (j === i ? e.target.value : v)))
+                    }
+                  />
+                </label>
+                <DomainVerdict check={domains.checks[i]!} onRecheck={domains.recheck} />
+              </Fragment>
+            ))}
+            {duplicateEmail && (
+              <p className="error">
+                {duplicateEmail} is listed twice. Each guardian must be a different address —
+                otherwise a {preset.k}-of-{preset.n} has fewer real guardians than it claims.
+              </p>
+            )}
+            <button
+              type="submit"
+              className="btn btn--primary"
+              disabled={
+                status !== 'idle' ||
+                !address ||
+                blockedReason !== null ||
+                !emailsComplete ||
+                duplicateEmail !== null ||
+                domains.blocking
+              }
+            >
+              {status === 'sealing'
+                ? preset.n === 1
+                  ? 'Sealing…'
+                  : `Sealing ${preset.n} guardians…`
+                : status === 'installing'
+                  ? mode === 'replacing'
+                    ? 'Replacing…'
+                    : 'Installing…'
+                  : !emailsComplete
+                    ? `Fill in all ${preset.n}`
+                    : duplicateEmail
+                      ? 'Guardians must differ'
+                      : domains.blocking
+                        ? domains.checks.some((c) => c.state === 'checking')
+                          ? 'Checking domains…'
+                          : 'Fix the flagged domain'
+                        : mode === 'replacing'
+                        ? 'Seal & replace'
+                        : 'Protect account'}
+            </button>
+            <p className="hint">
+              Sealing is paid, once per guardian — {preset.n}{' '}
+              {preset.n === 1 ? 'seal' : 'seals'} for this choice. It sends no email: the
+              human-in-the-loop round trip happens only at recovery, and only for the{' '}
+              {preset.k} you name then.
+            </p>
+          </>
         ) : (
-          <input
-            type="text"
-            required
-            placeholder="World ID nullifier hash"
-            value={nullifierHash}
-            onChange={(e) => setNullifierHash(e.target.value)}
-          />
+          <>
+            <input
+              type="text"
+              required
+              placeholder="World ID nullifier hash"
+              value={nullifierHash}
+              onChange={(e) => setNullifierHash(e.target.value)}
+            />
+            <button
+              type="submit"
+              className="btn btn--primary"
+              disabled={status !== 'idle' || !address || blockedReason !== null}
+            >
+              {status === 'sealing'
+                ? 'Sealing…'
+                : status === 'installing'
+                  ? mode === 'replacing'
+                    ? 'Replacing…'
+                    : 'Installing…'
+                  : mode === 'replacing'
+                    ? 'Seal & replace'
+                    : 'Protect account'}
+            </button>
+          </>
         )}
-        <button type="submit" className="btn btn--primary" disabled={status !== 'idle' || !address || blockedReason !== null}>
-          {status === 'sealing'
-            ? 'Sealing…'
-            : status === 'installing'
-              ? mode === 'replacing'
-                ? 'Replacing…'
-                : 'Installing…'
-              : mode === 'replacing'
-                ? 'Seal & replace'
-                : 'Protect account'}
-        </button>
       </form>
 
       {mode === 'replacing' && status === 'idle' && (
@@ -296,6 +458,91 @@ export function RecoveryCard({ onRegistered }: { onRegistered: (email: string | 
   );
 }
 
+/**
+ * What the DKIM registry says about one guardian's domain.
+ *
+ * Rendered per guardian rather than once for the form: in a five-guardian set the answers routinely
+ * differ, and "one of these is not recoverable" is useless without saying which.
+ */
+function DomainVerdict({ check, onRecheck }: { check: DomainCheck; onRecheck: () => void }) {
+  if (check.state === 'idle') return null;
+
+  if (check.state === 'checking') {
+    return <span className="hint">Checking whether {check.domain ?? 'this domain'} can be recovered…</span>;
+  }
+
+  if (check.state === 'eligible') {
+    return (
+      <span className="hint domain-verdict domain-verdict--ok">
+        <strong>{check.domain}</strong> is registered — emails from it can be proven.
+      </span>
+    );
+  }
+
+  if (check.state === 'error') {
+    // Not evidence either way, so it does not block. Say so rather than implying a verdict.
+    return (
+      <span className="hint">
+        Could not reach the registry to check {check.domain}. Sealing is still allowed — this is a
+        failed check, not a failed domain.
+      </span>
+    );
+  }
+
+  if (check.state === 'unsupported') {
+    return (
+      <span className="error">
+        <strong>{check.domain}</strong> is not eligible for recovery — Nihilium cannot prove emails
+        from this domain, so a share sealed against it could never be opened. Use a different address.
+      </span>
+    );
+  }
+
+  // needs_registration and unverified are both fixable by sending one email, so they share an action.
+  return (
+    <span className="error">
+      {check.state === 'needs_registration' ? (
+        <>
+          <strong>{check.domain}</strong> is not registered yet.
+        </>
+      ) : (
+        <>
+          No DKIM record found for <strong>{check.domain}</strong>, so recovery through it would be a
+          guess.
+        </>
+      )}{' '}
+      Send any email from this address to <a href={`mailto:${REGISTER_EMAIL}`}>{REGISTER_EMAIL}</a> so
+      its key can be recorded, then{' '}
+      <button type="button" className="btn-inline" onClick={onRecheck}>
+        check again
+      </button>
+      .
+    </span>
+  );
+}
+
+/** The account's own recovery gate — distinct from the veto guardians below it. */
+function GuardianGate({ gate }: { gate: { emails: string[]; threshold: number } }) {
+  return (
+    <div className="guardians">
+      <h3>Recovery guardians</h3>
+      <p className="hint">
+        {gate.threshold === gate.emails.length && gate.emails.length === 1
+          ? 'A single email holds recovery for this account.'
+          : `Any ${gate.threshold} of these ${gate.emails.length} can recover the account together. Fewer cannot, and no one of them can alone.`}
+      </p>
+      <ul className="guardians__list">
+        {gate.emails.map((email, i) => (
+          <li key={email}>
+            <span className="guardians__role">Guardian {i + 1}</span>
+            <code>{email}</code>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function GuardianList({ guardians }: { guardians: Guardians }) {
   return (
     <div className="guardians">
@@ -319,7 +566,7 @@ function GuardianList({ guardians }: { guardians: Guardians }) {
         </li>
         <li>
           <span className="guardians__role">Timelock</span>
-          <code>{guardians.timelockBlocks} blocks</code>
+          <code>{formatDuration(guardians.timelockSeconds)}</code>
         </li>
       </ul>
     </div>

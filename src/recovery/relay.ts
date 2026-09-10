@@ -28,8 +28,8 @@ export interface RelayConfig {
   abortAuthority: Address;
   resumeMembers: Address[];
   resumeThreshold: number;
-  timelockBlocks: string;
-  pauseCeilingBlocks: string;
+  timelockSeconds: string;
+  pauseCeilingSeconds: string;
 }
 
 export async function fetchRelayConfig(): Promise<RelayConfig> {

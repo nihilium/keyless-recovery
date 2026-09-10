@@ -36,6 +36,11 @@ const erc7579AccountAbi = [
 
 const MODULE_TYPE_EXECUTOR = 2n;
 
+// Mirrors `GradualVeto.Config` in recovery-sdk (onchain/evm/src/GradualVeto.sol). ABI encoding is
+// positional, so a drift in field *order* or *type* here produces silently-wrong calldata rather
+// than a compile error — and a drift in units does the same. That is exactly how the v1 -> v2 clock
+// change bit: `timelock*` stayed a uint64 and kept encoding fine while its meaning went from blocks
+// to wall-clock seconds. Any change to that struct must be mirrored here by hand.
 const gradualVetoConfigAbiType = {
   type: 'tuple',
   components: [
@@ -43,8 +48,8 @@ const gradualVetoConfigAbiType = {
     { name: 'abortAuthority', type: 'address' },
     { name: 'resumeMembers', type: 'address[]' },
     { name: 'resumeThreshold', type: 'uint8' },
-    { name: 'timelockBlocks', type: 'uint64' },
-    { name: 'pauseCeilingBlocks', type: 'uint64' },
+    { name: 'timelockSeconds', type: 'uint64' },
+    { name: 'pauseCeilingSeconds', type: 'uint64' },
   ],
 } as const;
 
@@ -54,8 +59,8 @@ interface VetoConfigResponse {
   abortAuthority: Address;
   resumeMembers: Address[];
   resumeThreshold: number;
-  timelockBlocks: string;
-  pauseCeilingBlocks: string;
+  timelockSeconds: string;
+  pauseCeilingSeconds: string;
 }
 
 export async function fetchVetoConfig(): Promise<VetoConfigResponse> {
@@ -96,8 +101,8 @@ function buildInstallCalldata(config: VetoConfigResponse, recoveryOwner: Address
         abortAuthority: config.abortAuthority,
         resumeMembers: config.resumeMembers,
         resumeThreshold: config.resumeThreshold,
-        timelockBlocks: BigInt(config.timelockBlocks),
-        pauseCeilingBlocks: BigInt(config.pauseCeilingBlocks),
+        timelockSeconds: BigInt(config.timelockSeconds),
+        pauseCeilingSeconds: BigInt(config.pauseCeilingSeconds),
       },
     ],
   );

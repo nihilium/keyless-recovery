@@ -22,7 +22,14 @@ export interface AccountRef {
 
 export interface EmailCondition {
   type: 'email';
-  email: string;
+  /**
+   * The guardian addresses, ORDERED. Position is load-bearing: entry `i` becomes Shamir member
+   * `i + 1` in the quorum seal, and that index is the only way back from an email the user picks to
+   * the share it unlocks. Never reorder a registered set.
+   */
+  emails: string[];
+  /** k — how many of `emails` must complete a ceremony to recover. 1, 2 or 3 in this app. */
+  threshold: number;
 }
 
 export interface WorldIdCondition {
@@ -44,7 +51,10 @@ export type ConditionInput =
 // generic across providers (any of them could care who's claiming), optional because the fictive
 // provider doesn't need it. The Nihilium provider requires it: it becomes the new validator's owner.
 export type ConditionProof =
-  | { type: 'email'; email: string; claimantAddress?: Address }
+  // `emails` names which guardians to actually contact — exactly `threshold` of the registered set,
+  // no more. The quorum refuses any other count: fewer cannot reconstruct, and more would drag
+  // people through a ceremony the recovery does not need.
+  | { type: 'email'; emails: string[]; claimantAddress?: Address }
   | { type: 'worldid'; proof: string; claimantAddress?: Address };
 
 // --- Records / handles ---------------------------------------------------
@@ -80,6 +90,13 @@ export interface RecoveryHandle {
 export interface RecoveryCeremonyDetail {
   phase: string;
   message?: string;
+  /**
+   * Per-guardian progress, when the ceremony has more than one. The members run concurrently — all
+   * of them are required, so serializing would stack one human email wait on top of another — which
+   * means a single `phase` cannot describe the ceremony once k > 1. Optional and additive: the
+   * fictive provider never sets it, and the UI must render without it.
+   */
+  members?: Array<{ email: string; phase: string; message?: string }>;
 }
 
 export type RecoveryStatus =

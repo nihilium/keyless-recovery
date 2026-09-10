@@ -14,7 +14,9 @@ import type { RecoveryCondition } from '../RecoveryProvider';
 export function describeCondition(condition: RecoveryCondition): string {
   switch (condition.type) {
     case 'email':
-      return `email: ${condition.email}`;
+      return condition.emails.length === 1
+        ? `email: ${condition.emails[0]}`
+        : `${condition.threshold} of ${condition.emails.length} emails: ${condition.emails.join(', ')}`;
     case 'worldid':
       return `World ID (nullifier ${condition.nullifierHash.slice(0, 10)}…)`;
   }

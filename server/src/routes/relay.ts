@@ -78,8 +78,8 @@ relayRouter.get("/config", (_req, res) => {
     abortAuthority: demoVetoConfig.abortAuthority,
     resumeMembers: demoVetoConfig.resumeMembers,
     resumeThreshold: demoVetoConfig.resumeThreshold,
-    timelockBlocks: demoVetoConfig.timelockBlocks.toString(),
-    pauseCeilingBlocks: demoVetoConfig.pauseCeilingBlocks.toString(),
+    timelockSeconds: demoVetoConfig.timelockSeconds.toString(),
+    pauseCeilingSeconds: demoVetoConfig.pauseCeilingSeconds.toString(),
   });
 });
 

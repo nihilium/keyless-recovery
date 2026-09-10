@@ -57,8 +57,8 @@ export type GradualVetoConfig = {
   abortAuthority: Address;
   resumeMembers: readonly Address[];
   resumeThreshold: number;
-  timelockBlocks: bigint;
-  pauseCeilingBlocks: bigint;
+  timelockSeconds: bigint;
+  pauseCeilingSeconds: bigint;
 };
 
 export const demoVetoConfig: GradualVetoConfig = {
@@ -66,6 +66,6 @@ export const demoVetoConfig: GradualVetoConfig = {
   abortAuthority: guardianAddresses.abort,
   resumeMembers: [guardianAddresses.resume],
   resumeThreshold: 1,
-  timelockBlocks: config.timelockBlocks,
-  pauseCeilingBlocks: config.pauseCeilingBlocks,
+  timelockSeconds: config.timelockSeconds,
+  pauseCeilingSeconds: config.pauseCeilingSeconds,
 };

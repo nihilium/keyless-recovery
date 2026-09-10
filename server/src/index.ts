@@ -5,7 +5,7 @@ import { relayRouter } from "./routes/relay.js";
 import { adminRouter } from "./routes/admin.js";
 import { sealsRouter } from "./routes/seals.js";
 import { accountsRouter } from "./routes/accounts.js";
-import { relayerAddress, guardianAddresses } from "./chain.js";
+import { relayerAddress, guardianAddresses, RECOVERY_MODULE_ADDRESS } from "./chain.js";
 import { logError, logInfo } from "./log.js";
 
 const app = express();
@@ -42,7 +42,9 @@ process.on("uncaughtException", (err) => logError("process", "uncaught exception
 app.listen(config.port, () => {
   logInfo("boot", `relayer listening on :${config.port}`, {
     chain: config.networkId,
-    module: "0x00339522A395f0d0838Ad5cf979fAdc8B9c6269B",
+    // Resolved from the SDK's address book, not hardcoded: the v1 -> v2 redeploy moved this, and a
+    // literal here would have kept logging the superseded address the app no longer talks to.
+    module: RECOVERY_MODULE_ADDRESS,
   });
   logInfo("boot", "signers", {
     relayer: relayerAddress,

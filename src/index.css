@@ -939,3 +939,93 @@ input::placeholder {
   max-width: 110px;
   flex: 0 0 auto;
 }
+
+/* ---------- guardian setup ---------- */
+
+/* The 1 / 3 / 5 chooser, and the "which k of n" picker at recovery. Same option-card vocabulary
+   for both, since they are the same question asked at opposite ends of the account's life. */
+.gate-picker,
+.guardian-picker {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.9rem;
+}
+
+.gate-option {
+  flex: 1 1 8rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  padding: 0.7rem 0.8rem;
+  text-align: left;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.gate-option:hover:not(:disabled) {
+  background: var(--surface-hover);
+  border-color: var(--border-strong);
+}
+
+.gate-option:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.gate-option--active {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.gate-option__title {
+  font-weight: 600;
+  font-size: 0.92rem;
+}
+
+.gate-option__gate {
+  font-size: 0.8rem;
+  color: var(--text-dim);
+}
+
+.gate-option__cost {
+  font-size: 0.75rem;
+  color: var(--text-faint);
+  line-height: 1.35;
+}
+
+/* Guardian addresses stack vertically — unlike the chooser, these are full email addresses and
+   would truncate badly side by side. */
+.guardian-picker {
+  flex-direction: column;
+}
+
+.guardian-picker .gate-option {
+  flex: 1 1 auto;
+}
+
+.gate-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+
+/* A link-styled button inside prose — the "check again" affordance on a domain verdict. */
+.btn-inline {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.domain-verdict--ok {
+  color: var(--ok);
+}

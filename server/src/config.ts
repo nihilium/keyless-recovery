@@ -21,7 +21,10 @@ export const config = {
   recoveryIndexFile: process.env.RECOVERY_INDEX_FILE ?? "./seals/recovery-index.json",
   /** RecoveryModule's Sepolia deployment block — the floor for event scans. */
   deploymentBlock: Number(process.env.DEPLOYMENT_BLOCK ?? 11652963),
-  // Demo veto timing, in blocks (~12s each on Sepolia). Small on purpose for a live demo.
-  timelockBlocks: BigInt(process.env.TIMELOCK_BLOCKS ?? 5),
-  pauseCeilingBlocks: BigInt(process.env.PAUSE_CEILING_BLOCKS ?? 20),
+  // Demo veto timing, in wall-clock seconds. Small on purpose for a live demo. These were 5 and 20
+  // *blocks* against the v1 module; the defaults below preserve that wall-clock duration on Sepolia
+  // (5 × ~12s, 20 × ~12s) rather than the bare numbers, which as seconds would have cut the demo
+  // timelock from a minute to five seconds without any error.
+  timelockSeconds: BigInt(process.env.TIMELOCK_SECONDS ?? 60),
+  pauseCeilingSeconds: BigInt(process.env.PAUSE_CEILING_SECONDS ?? 240),
 };

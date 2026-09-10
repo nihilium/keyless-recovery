@@ -26,6 +26,10 @@ interface IndexEntry {
   /** KDF input: a completed recovery bumps it on-chain, so the seal records which one it used. */
   epoch: number;
   registeredAt: number;
+  /** Every guardian email, ORDERED to match the quorum seal's Shamir member indices. */
+  emails: string[];
+  /** k — how many of `emails` must cooperate to recover. */
+  threshold: number;
 }
 
 function loadIndex(): Record<string, IndexEntry> {
@@ -43,22 +47,34 @@ const normalize = (email: string) => email.trim().toLowerCase();
 /** Store the seal produced by the browser, plus the email -> account index recovery looks up by. */
 sealsRouter.put("/:vaultId", async (req, res) => {
   const { vaultId } = req.params;
-  const { blob, email, userId, smartAccount, recoveryOwner, epoch } = req.body ?? {};
-  if (!vaultId || !blob || !email || !smartAccount || !recoveryOwner) {
-    res.status(400).json({ error: "vaultId, blob, email, smartAccount and recoveryOwner are required." });
+  const { blob, emails, threshold, userId, smartAccount, recoveryOwner, epoch } = req.body ?? {};
+  if (!vaultId || !blob || !Array.isArray(emails) || emails.length === 0 || !smartAccount || !recoveryOwner) {
+    res.status(400).json({
+      error: "vaultId, blob, emails, smartAccount and recoveryOwner are required.",
+    });
+    return;
+  }
+  const k = Number(threshold ?? 1);
+  if (!Number.isInteger(k) || k < 1 || k > emails.length) {
+    res.status(400).json({ error: `threshold ${threshold} is not satisfiable by ${emails.length} emails.` });
     return;
   }
   try {
     await sealStore.putSeal(vaultId, blob as SealBlob);
     const index = loadIndex();
-    index[normalize(email)] = {
+    const entry: IndexEntry = {
       userId: userId ?? vaultId,
       vaultId,
       smartAccount,
       recoveryOwner,
       epoch: Number(epoch ?? 0),
       registeredAt: Date.now(),
+      emails: (emails as string[]).map(normalize),
+      threshold: k,
     };
+    // One quorum is one seal, so every guardian email points at the same vault — a recovery can be
+    // started from whichever of them the user still remembers.
+    for (const email of entry.emails) index[email] = entry;
     saveIndex(index);
     res.json({ ok: true });
   } catch (err) {

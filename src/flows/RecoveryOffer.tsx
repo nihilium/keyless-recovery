@@ -11,7 +11,7 @@ import { useRecoveryProvider, RECOVERY_PROVIDER_CAPABILITIES } from '../recovery
 import { useRecoverFunds } from './recoverFunds';
 import { emailLookupInput, emailProof } from '../recovery/conditions/EmailCondition';
 import { worldIdLookupInput, worldIdProof } from '../recovery/conditions/WorldIdCondition';
-import type { AuthorityRef } from '../recovery/RecoveryProvider';
+import type { AuthorityRef, RecoveryCondition } from '../recovery/RecoveryProvider';
 import { truncateAddress } from '../wallet/Identicon';
 import { relayVeto } from '../recovery/relay';
 
@@ -46,6 +46,8 @@ export function RecoveryOffer({
   const [nullifierHash, setNullifierHash] = useState('');
   const [newOwner, setNewOwner] = useState(initialNewOwner ?? '');
   const [clearing, setClearing] = useState(false);
+  /** Which guardians to contact. Exactly `threshold` of them — the quorum refuses any other count. */
+  const [chosen, setChosen] = useState<string[]>([]);
 
   const untilTs = flow.state.status?.state === 'timelocked' ? flow.state.status.untilTs : null;
   const remainingMs = useCountdown(untilTs);
@@ -73,14 +75,37 @@ export function RecoveryOffer({
 
   async function handleLookup(e: React.FormEvent) {
     e.preventDefault();
+    // A previous lookup's picks belong to a different account's guardian set, and carrying them
+    // over would silently name guardians this account has never heard of.
+    setChosen([]);
     if (tab === 'email') await flow.lookup(emailLookupInput(email));
     else await flow.lookup(worldIdLookupInput(nullifierHash));
   }
 
+  // The gate this account was registered with, once a lookup has found it.
+  const foundCondition = flow.state.record?.condition;
+  const gate =
+    foundCondition?.type === 'email'
+      ? { emails: foundCondition.emails, threshold: foundCondition.threshold }
+      : null;
+  // A 1-of-1 has nothing to choose, so it skips the picker entirely.
+  const selection = gate ? (gate.threshold === 1 ? gate.emails.slice(0, 1) : chosen) : [];
+  const selectionComplete = gate ? selection.length === gate.threshold : true;
+
+  function toggleGuardian(guardianEmail: string) {
+    setChosen((prev) => {
+      if (prev.includes(guardianEmail)) return prev.filter((e) => e !== guardianEmail);
+      // Naming more than k would drag guardians through a ceremony the recovery does not need, so
+      // the picker caps rather than letting the quorum reject it minutes later.
+      if (gate && prev.length >= gate.threshold) return prev;
+      return [...prev, guardianEmail];
+    });
+  }
+
   async function handleStart() {
-    if (!newOwnerValid) return;
+    if (!newOwnerValid || !selectionComplete) return;
     const claimant = newOwner as Address;
-    if (tab === 'email') await flow.start(emailProof(email, claimant));
+    if (tab === 'email') await flow.start(emailProof(selection, claimant));
     else await flow.start(worldIdProof(nullifierHash, claimant));
   }
 
@@ -145,6 +170,36 @@ export function RecoveryOffer({
             <code>{truncateAddress(flow.state.record.account.smartAccount)}</code>.
           </p>
 
+          {gate && gate.threshold > 1 && (
+            <div className="field">
+              <span className="field__label">
+                Pick which {gate.threshold} of your {gate.emails.length} guardian emails to use
+              </span>
+              <div className="guardian-picker">
+                {gate.emails.map((guardianEmail) => {
+                  const picked = selection.includes(guardianEmail);
+                  const full = !picked && selection.length >= gate.threshold;
+                  return (
+                    <button
+                      key={guardianEmail}
+                      type="button"
+                      className={picked ? 'gate-option gate-option--active' : 'gate-option'}
+                      onClick={() => toggleGuardian(guardianEmail)}
+                      disabled={full}
+                    >
+                      <span className="gate-option__title">{guardianEmail}</span>
+                      <span className="gate-option__gate">{picked ? 'Will be contacted' : full ? '—' : 'Tap to use'}</span>
+                    </button>
+                  );
+                })}
+              </div>
+              <span className="hint">
+                Each one you pick sends a real email and waits for a human reply, and they run at the
+                same time. Pick the {gate.threshold} inboxes you can actually reach right now.
+              </span>
+            </div>
+          )}
+
           <label className="field">
             <span className="field__label">Give control to this address</span>
             <input
@@ -160,8 +215,17 @@ export function RecoveryOffer({
             </span>
           </label>
 
-          <button type="button" className="btn btn--primary" onClick={handleStart} disabled={!newOwnerValid}>
-            {newOwnerValid ? 'Start recovery' : 'Enter a valid address'}
+          <button
+            type="button"
+            className="btn btn--primary"
+            onClick={handleStart}
+            disabled={!newOwnerValid || !selectionComplete}
+          >
+            {!newOwnerValid
+              ? 'Enter a valid address'
+              : !selectionComplete && gate
+                ? `Pick ${gate.threshold - selection.length} more guardian${gate.threshold - selection.length === 1 ? '' : 's'}`
+                : 'Start recovery'}
           </button>
         </div>
       )}
@@ -177,7 +241,19 @@ export function RecoveryOffer({
           ) : (
             <p>{ceremonyPhaseLabel(ceremony?.phase)}</p>
           )}
-          {ceremony?.message && <p className="hint">{ceremony.message}</p>}
+          {ceremony?.members && ceremony.members.length > 1 ? (
+            // Members run concurrently, so one phase label cannot describe the ceremony. Show each.
+            <ul className="guardians__list">
+              {ceremony.members.map((member) => (
+                <li key={member.email}>
+                  <span className="guardians__role">{member.email}</span>
+                  <code>{ceremonyPhaseLabel(member.phase)}</code>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            ceremony?.message && <p className="hint">{ceremony.message}</p>
+          )}
         </div>
       )}
 
@@ -280,8 +356,11 @@ export function RecoveryOffer({
   );
 }
 
-function describeConditionValue(condition: { type: 'email'; email: string } | { type: 'worldid'; nullifierHash: string }): string {
-  return condition.type === 'email' ? condition.email : `World ID (${condition.nullifierHash.slice(0, 10)}…)`;
+function describeConditionValue(condition: RecoveryCondition): string {
+  if (condition.type === 'worldid') return `World ID (${condition.nullifierHash.slice(0, 10)}…)`;
+  return condition.emails.length === 1
+    ? condition.emails[0]!
+    : `${condition.threshold} of ${condition.emails.length} guardian emails`;
 }
 
 const CEREMONY_PHASE_LABELS: Record<string, string> = {

@@ -5,9 +5,15 @@
 // The one exception is broadcasting transactions (see relay.ts): those cost gas a just-recovered
 // user doesn't have, and pause/abort are msg.sender-gated to guardian keys that must never ship to
 // a browser. Reads, signing and every ZK step happen here.
-import { RecoverySDK } from '@nihilium-recovery/core';
+import { RecoverySDK, generateRRS } from '@nihilium-recovery/core';
 import { EvmKeyAdapter, toEvmAddress } from '@nihilium-recovery/key-evm';
 import { ZKEmailConditionAdapter, type ZKEmailPhase } from '@nihilium-recovery/condition-zkemail';
+import {
+  quorumOf,
+  QuorumIncompleteError,
+  type QuorumConditionAdapter,
+  type QuorumMember,
+} from '@nihilium-recovery/condition-quorum';
 import { NihiliumPaymentProviderClientAPIKEY_DO_NOT_USE, setApiEndpoint } from '@nihilium-recovery/nihilium';
 import { hexToBytes, bytesToHex, type Address, type Hex } from 'viem';
 import type {
@@ -24,6 +30,7 @@ import type {
 } from '../RecoveryProvider';
 import { BrowserSealStore, lookupSealByEmail } from '../browserSealStore';
 import { lookupRecoveryIndexEntry, putRecoveryIndexEntry } from '../browserRecoveryIndex';
+import { findDuplicateEmail, normalizeEmail } from '../conditions/EmailCondition';
 import { CHAIN_ID, VetoStateOrdinal, VETO_STATE_LABELS, currentAttemptIntentHash, hashIntent, isTerminalVetoState, readAccountConfig, readProtection, remainingTimelockMs, stateOf, type RecoveryIntent } from '../onchain';
 import { fetchRelayConfig, relayComplete, relayInitiate, relayVeto } from '../relay';
 import { recoveryValidatorInitData } from '../recoveryValidator';
@@ -44,6 +51,11 @@ interface CeremonyJob {
   phase: ZKEmailPhase | 'submitting' | 'done' | 'error';
   message?: string;
   error?: string;
+  /**
+   * One entry per guardian being contacted, in the order the user picked them. The members run
+   * concurrently, so once k > 1 no single `phase` describes the ceremony.
+   */
+  members: Array<{ email: string; phase: string; message?: string }>;
   account: Address;
   intent?: RecoveryIntent;
   /** Hash of the intent we submitted — used to tell our attempt apart from an earlier one. */
@@ -52,24 +64,67 @@ interface CeremonyJob {
   completeTxHash?: Hex;
 }
 
-function requireEmail(condition: RecoveryCondition | ConditionInput | ConditionProof): string {
+function requireEmailCondition(condition: RecoveryCondition): { emails: string[]; threshold: number } {
   if (condition.type !== 'email') {
     throw new Error('The Nihilium recovery provider only supports email conditions.');
   }
-  return condition.email;
+  return { emails: condition.emails, threshold: condition.threshold };
+}
+
+function requireEmailInput(input: ConditionInput): string {
+  if (input.type !== 'email') {
+    throw new Error('The Nihilium recovery provider only supports email conditions.');
+  }
+  return input.email;
+}
+
+function requireEmailProof(proof: ConditionProof): string[] {
+  if (proof.type !== 'email') {
+    throw new Error('The Nihilium recovery provider only supports email conditions.');
+  }
+  return proof.emails;
+}
+
+/**
+ * A paid, multi-step sealing run that can be resumed without re-buying the members it already got.
+ *
+ * Held in memory only, and deliberately: `rrs` is the root secret every recovery key derives from,
+ * so persisting it to localStorage would be strictly worse than re-paying after a page reload.
+ */
+interface SealCheckpoint {
+  rrs: Uint8Array;
+  setId: string;
+  members: QuorumMember[];
+}
+
+/**
+ * `setId` binds a set of member seals to one Shamir split, and resuming needs the interrupted run's
+ * own value. The adapter only exposes it on `Condition.descriptor`, which is typed `unknown` and
+ * documented adapter-private — so the reach-through is quarantined here rather than spread around.
+ */
+function quorumSetId(condition: { descriptor: unknown }): string {
+  const setId = (condition.descriptor as { setId?: unknown } | undefined)?.setId;
+  if (typeof setId !== 'string' || !setId) {
+    throw new Error('The quorum condition carries no set id — cannot checkpoint this sealing run.');
+  }
+  return setId;
 }
 
 export class NihiliumRecoveryProvider implements RecoveryProvider {
-  private readonly condition: ZKEmailConditionAdapter;
-  private readonly sdk: RecoverySDK;
+  /**
+   * Stateless, so one instance serves every member of a quorum — `quorumOf` hands the same adapter
+   * to all n slots, and each `buildCondition` call carries its own email.
+   */
+  private readonly zkEmail: ZKEmailConditionAdapter;
   private readonly sealStore = new BrowserSealStore();
   private readonly jobs = new Map<string, CeremonyJob>();
+  private readonly sealCheckpoints = new Map<string, SealCheckpoint>();
 
   constructor() {
     if (!API_KEY) {
       throw new Error('VITE_NIHILIUM_API_KEY is not set — sealing is a paid Nihilium operation.');
     }
-    this.condition = new ZKEmailConditionAdapter({
+    this.zkEmail = new ZKEmailConditionAdapter({
       emailServiceUrl: EMAIL_SERVICE_URL,
       network: CHAIN_ID,
       threshold: THRESHOLD,
@@ -79,11 +134,21 @@ export class NihiliumRecoveryProvider implements RecoveryProvider {
       // is a spend limit on sealing, not a key to anyone's funds.
       payment: new NihiliumPaymentProviderClientAPIKEY_DO_NOT_USE(API_URL, API_KEY),
     });
-    this.sdk = new RecoverySDK({
-      key: new EvmKeyAdapter(),
-      condition: this.condition,
-      sealStore: this.sealStore,
-    });
+  }
+
+  /**
+   * The member count varies per user, so the quorum adapter — and therefore the SDK wrapping it —
+   * is built per operation rather than once in the constructor.
+   *
+   * Every gate goes through the quorum, including the single-email one. A 1-of-1 is the degenerate
+   * quorum, not a special case, which is what keeps sealing and recovery on one code path.
+   */
+  private quorumFor(memberCount: number, options?: Parameters<typeof quorumOf>[2]): QuorumConditionAdapter {
+    return quorumOf(this.zkEmail, memberCount, options);
+  }
+
+  private sdkFor(condition: QuorumConditionAdapter): RecoverySDK {
+    return new RecoverySDK({ key: new EvmKeyAdapter(), condition, sealStore: this.sealStore });
   }
 
   private chainFor(smartAccount: Address, vaultId: string, epoch: number) {
@@ -97,7 +162,11 @@ export class NihiliumRecoveryProvider implements RecoveryProvider {
   }
 
   async register(input: { account: AccountRef; condition: RecoveryCondition }): Promise<RecoveryRegistration> {
-    const email = requireEmail(input.condition);
+    const { emails, threshold } = requireEmailCondition(input.condition);
+    // The quorum enforces distinct member *indices*, not distinct identities — three copies of one
+    // address would pass every check downstream and yield a "2-of-3" with a single point of failure.
+    const duplicate = findDuplicateEmail(emails);
+    if (duplicate) throw new Error(`${duplicate} is listed twice. Each guardian must be a different address.`);
     const vaultId = input.account.userId;
     // epoch is a KDF input, and a completed recovery bumps it on-chain. Seal against the account's
     // *current* epoch so the key we derive now is the one recovery re-derives later.
@@ -106,40 +175,73 @@ export class NihiliumRecoveryProvider implements RecoveryProvider {
       .catch(() => 0);
     const chain = this.chainFor(input.account.smartAccount, vaultId, onChainEpoch);
 
-    const builtCondition = await this.condition.buildCondition({ email });
+    // Each member is a separately billed seal, so a run that dies at member 4 of 5 must not buy
+    // members 1-3 again. Resuming reproduces byte-identical shares only if it starts from the same
+    // root secret and the same set id, so both are carried on the checkpoint.
+    const prior = this.sealCheckpoints.get(vaultId);
+    const rrs = prior?.rrs ?? generateRRS();
+    const sealedMembers: QuorumMember[] = prior ? [...prior.members] : [];
+
+    const adapter = this.quorumFor(emails.length, {
+      // Fires only for members newly sealed on this run; reused ones are already in the list.
+      onMemberSealed: (member) => {
+        sealedMembers.push(member);
+        const checkpoint = this.sealCheckpoints.get(vaultId);
+        if (checkpoint) checkpoint.members = [...sealedMembers];
+      },
+      ...(prior ? { resumeFrom: { setId: prior.setId, members: prior.members } } : {}),
+    });
+
+    const builtCondition = await adapter.buildCondition({
+      threshold,
+      members: emails.map((email) => ({ email })),
+    });
+    // A resumed run reuses the interrupted run's set id, so checkpoint that rather than the fresh
+    // one this buildCondition just minted.
+    const setId = prior?.setId ?? quorumSetId(builtCondition);
+    this.sealCheckpoints.set(vaultId, { rrs, setId, members: sealedMembers });
 
     // putSeal() only receives a vaultId, but the vault also needs the email index and the account
     // it belongs to. recoveryOwner isn't known until the seal returns, so it's filled in by a
     // follow-up write below.
-    this.sealStore.publishContext = {
-      email,
+    const publishContext = {
+      emails,
+      threshold,
       userId: input.account.userId,
       smartAccount: input.account.smartAccount,
-      recoveryOwner: '0x0000000000000000000000000000000000000000',
       epoch: onChainEpoch,
     };
+    this.sealStore.publishContext = {
+      ...publishContext,
+      recoveryOwner: '0x0000000000000000000000000000000000000000',
+    };
 
-    // The paid k-of-n ceremony: a Groth16 proof per share, tens of seconds, all in this tab.
-    const { recoveryPubKey, sealBlob } = await this.sdk.seal({ condition: builtCondition, chain });
+    // The paid ceremony: one Groth16 proof per member share, tens of seconds each, all in this tab.
+    const { recoveryPubKey, sealBlob } = await this.sdkFor(adapter).seal({
+      recoveryKey: { kind: 'rrs', rrs },
+      condition: builtCondition,
+      chain,
+    });
     const recoveryOwner = toEvmAddress(recoveryPubKey) as Address;
 
     // Re-publish now that recoveryOwner is known, so the vault's index matches what goes on-chain.
-    this.sealStore.publishContext = {
-      email,
-      userId: input.account.userId,
-      smartAccount: input.account.smartAccount,
-      recoveryOwner,
-      epoch: onChainEpoch,
-    };
+    this.sealStore.publishContext = { ...publishContext, recoveryOwner };
     await this.sealStore.putSeal(vaultId, sealBlob);
 
-    putRecoveryIndexEntry(email, {
+    // Every member is bought and the seal is stored, so nothing is left to resume. Drop the root
+    // secret rather than leaving it reachable for the life of the tab.
+    rrs.fill(0);
+    this.sealCheckpoints.delete(vaultId);
+
+    putRecoveryIndexEntry({
       userId: input.account.userId,
       smartAccount: input.account.smartAccount,
       vaultId,
       epoch: onChainEpoch,
       recoveryOwner,
       registeredAt: Date.now(),
+      emails,
+      threshold,
     });
 
     const record: RecoveryRecord = {
@@ -152,7 +254,7 @@ export class NihiliumRecoveryProvider implements RecoveryProvider {
   }
 
   async lookup(conditionInput: ConditionInput): Promise<RecoveryRecord | null> {
-    const email = requireEmail(conditionInput);
+    const email = requireEmailInput(conditionInput);
     // The vault first: a brand-new browser has nothing in localStorage, and that's exactly the
     // case recovery exists for.
     const remote = await lookupSealByEmail(email).catch(() => null);
@@ -164,27 +266,50 @@ export class NihiliumRecoveryProvider implements RecoveryProvider {
           epoch: remote.epoch ?? 0,
           recoveryOwner: remote.recoveryOwner as Address,
           registeredAt: Date.now(),
+          emails: remote.emails ?? [normalizeEmail(email)],
+          threshold: remote.threshold ?? 1,
         }
       : lookupRecoveryIndexEntry(email);
     if (!entry) return null;
     return {
       id: entry.smartAccount,
       account: { userId: entry.userId, eoa: entry.smartAccount, smartAccount: entry.smartAccount },
-      condition: { type: 'email', email },
+      // The full guardian set, not just the email that was looked up — the UI needs it to ask which
+      // k of them to contact.
+      condition: { type: 'email', emails: entry.emails, threshold: entry.threshold },
       createdAt: entry.registeredAt,
     };
   }
 
   async initiate(record: RecoveryRecord, proof: ConditionProof): Promise<RecoveryHandle> {
-    const email = requireEmail(proof);
+    const chosen = requireEmailProof(proof).map(normalizeEmail);
+    if (chosen.length === 0) throw new Error('Name at least one guardian email to recover with.');
     const claimant = proof.claimantAddress;
     if (!claimant) throw new Error('The Nihilium recovery provider needs a claimantAddress on the proof.');
 
-    const remote = await lookupSealByEmail(email).catch(() => null);
+    // Any of the guardians can be the one that finds the account — they all index the same vault.
+    const remote = await lookupSealByEmail(chosen[0]!).catch(() => null);
     const entry = remote?.found
-      ? { smartAccount: remote.smartAccount as Address, vaultId: remote.vaultId, epoch: remote.epoch ?? 0 }
-      : lookupRecoveryIndexEntry(email);
+      ? {
+          smartAccount: remote.smartAccount as Address,
+          vaultId: remote.vaultId,
+          epoch: remote.epoch ?? 0,
+          emails: remote.emails ?? chosen,
+          threshold: remote.threshold ?? chosen.length,
+        }
+      : lookupRecoveryIndexEntry(chosen[0]!);
     if (!entry) throw new Error('No recovery registered for this email.');
+
+    // The quorum refuses any count but exactly k, and it does so *after* the seal is fetched. Say it
+    // now, before a minutes-long ceremony that could only ever have ended in the same refusal.
+    if (chosen.length !== entry.threshold) {
+      throw new Error(
+        `This account is protected by ${entry.threshold} of ${entry.emails.length} guardian emails, ` +
+          `so recovery needs exactly ${entry.threshold} of them named — ${chosen.length} were.`,
+      );
+    }
+    const unknown = chosen.find((email) => !entry.emails.includes(email));
+    if (unknown) throw new Error(`${unknown} is not one of this account's guardian emails.`);
 
     // The ceremony takes minutes and ends in a signature the module checks against its stored
     // recoveryOwner. If the seal we'd unseal belongs to a *different* recoveryOwner — which happens
@@ -219,7 +344,7 @@ export class NihiliumRecoveryProvider implements RecoveryProvider {
         );
       }
 
-      const sealOwner = remote?.found ? remote.recoveryOwner : lookupRecoveryIndexEntry(email)?.recoveryOwner;
+      const sealOwner = remote?.found ? remote.recoveryOwner : lookupRecoveryIndexEntry(chosen[0]!)?.recoveryOwner;
       if (sealOwner && sealOwner.toLowerCase() !== onChain.recoveryOwner.toLowerCase()) {
         throw new Error(
           `The stored seal belongs to recovery key ${sealOwner}, but the account is bound on-chain to ` +
@@ -230,10 +355,19 @@ export class NihiliumRecoveryProvider implements RecoveryProvider {
     }
 
     const handleId = crypto.randomUUID();
-    this.jobs.set(handleId, { phase: 'preparing', account: entry.smartAccount });
+    this.jobs.set(handleId, {
+      phase: 'preparing',
+      account: entry.smartAccount,
+      members: chosen.map((email) => ({ email, phase: 'preparing' })),
+    });
     // Deliberately not awaited: this runs for minutes (a human has to answer an email). The UI
     // follows it through status().
-    void this.runCeremony(handleId, entry.smartAccount, entry.vaultId, entry.epoch, email, claimant);
+    void this.runCeremony(handleId, entry.smartAccount, entry.vaultId, entry.epoch, {
+      chosen,
+      // Position in the registered set IS the Shamir member index, offset by one.
+      indices: chosen.map((email) => entry.emails.indexOf(email) + 1),
+      memberCount: entry.emails.length,
+    }, claimant);
     return { id: handleId, recordId: record.id };
   }
 
@@ -242,24 +376,36 @@ export class NihiliumRecoveryProvider implements RecoveryProvider {
     account: Address,
     vaultId: string,
     epoch: number,
-    email: string,
+    gate: { chosen: string[]; indices: number[]; memberCount: number },
     claimant: Address,
   ) {
     const job = this.jobs.get(handleId)!;
     try {
       const chain = this.chainFor(account, vaultId, epoch);
-      const conditionProof = await this.condition.buildProof({
-        email,
-        onProgress: (message) => {
-          job.message = message;
-        },
-        onPhase: (phase) => {
-          job.phase = phase;
-        },
+      const adapter = this.quorumFor(gate.memberCount);
+
+      // Each member gets its own callbacks rather than a shared stream. The quorum forwards
+      // `params` untouched to that member's buildProof, so per-guardian progress comes back
+      // already attributed — no parsing a "[member #i]" prefix off a merged log.
+      const conditionProof = await adapter.buildProof({
+        members: gate.indices.map((index, slot) => ({
+          index,
+          params: {
+            email: gate.chosen[slot]!,
+            onProgress: (message: string) => {
+              job.members[slot]!.message = message;
+            },
+            onPhase: (phase: ZKEmailPhase) => {
+              job.members[slot]!.phase = phase;
+            },
+          },
+        })),
       });
 
-      // Sends the recovery email and long-polls until the human replies, then proves and unseals.
-      const authority = await this.sdk.recover({ proof: conditionProof, chain });
+      // Sends one recovery email per named guardian and long-polls until each human replies, then
+      // proves, unseals and reconstructs. The members run concurrently inside the adapter.
+      job.phase = 'awaiting_email_reply';
+      const authority = await this.sdkFor(adapter).recover({ proof: conditionProof, chain });
       if (authority.kind !== 'capability') throw new Error('Expected a scoped signing capability.');
 
       job.phase = 'submitting';
@@ -289,7 +435,14 @@ export class NihiliumRecoveryProvider implements RecoveryProvider {
       }
     } catch (err) {
       job.phase = 'error';
-      job.error = (err as Error).message;
+      // The quorum's own error names which guardians returned and which did not, which is far more
+      // actionable than "recovery failed" when three inboxes were involved.
+      job.error =
+        err instanceof QuorumIncompleteError
+          ? `${err.message} Guardians: ${job.members
+              .map((m) => `${m.email} (${m.phase})`)
+              .join(', ')}`
+          : (err as Error).message;
     }
   }
 
@@ -300,7 +453,14 @@ export class NihiliumRecoveryProvider implements RecoveryProvider {
 
     // Still off-chain: the email ceremony hasn't produced a signed intent yet.
     if (!job.initiateTxHash) {
-      return { state: 'pending', ceremony: { phase: job.phase, ...(job.message ? { message: job.message } : {}) } };
+      return {
+        state: 'pending',
+        ceremony: {
+          phase: job.phase,
+          ...(job.message ? { message: job.message } : {}),
+          members: job.members,
+        },
+      };
     }
 
     // Only trust the on-chain state once the module's attempt slot actually holds *our* intent.

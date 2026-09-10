@@ -58,9 +58,10 @@ export async function remainingTimelockMs(account: Address): Promise<number> {
     args: [account],
   });
   const { veto } = await readAccountConfig(account);
-  const remaining = veto.timelockBlocks > attempt.accruedBlocks ? veto.timelockBlocks - attempt.accruedBlocks : 0n;
-  // ~12s/block on Sepolia — an estimate for the countdown, not a guarantee.
-  return Number(remaining) * 12_000;
+  const remaining =
+    veto.timelockSeconds > attempt.accruedSeconds ? veto.timelockSeconds - attempt.accruedSeconds : 0n;
+  // The module's clock is wall-clock seconds, so this is exact rather than a per-chain estimate.
+  return Number(remaining) * 1_000;
 }
 
 export { VetoStateOrdinal };

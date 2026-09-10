@@ -68,7 +68,8 @@ function saveHandles(handles: Record<string, HandleState>) {
 function conditionMatches(condition: RecoveryCondition, input: ConditionInput): boolean {
   if (condition.type !== input.type) return false;
   if (condition.type === 'email' && input.type === 'email') {
-    return condition.email.toLowerCase() === input.email.toLowerCase();
+    // Any one guardian identifies the account — the lookup panel asks for one address, not the set.
+    return condition.emails.some((email) => email.toLowerCase() === input.email.toLowerCase());
   }
   if (condition.type === 'worldid' && input.type === 'worldid') {
     return condition.nullifierHash === input.nullifierHash;
@@ -79,7 +80,15 @@ function conditionMatches(condition: RecoveryCondition, input: ConditionInput): 
 function conditionSatisfiedByProof(condition: RecoveryCondition, proof: ConditionProof): boolean {
   if (condition.type !== proof.type) return false;
   if (condition.type === 'email' && proof.type === 'email') {
-    return condition.email.toLowerCase() === proof.email.toLowerCase();
+    // Mirrors the real provider's gate: exactly k named, and every one of them registered. The
+    // fictive provider does no Shamir, so this check *is* the threshold here.
+    const registered = condition.emails.map((email) => email.toLowerCase());
+    const named = proof.emails.map((email) => email.toLowerCase());
+    return (
+      named.length === condition.threshold &&
+      new Set(named).size === named.length &&
+      named.every((email) => registered.includes(email))
+    );
   }
   if (condition.type === 'worldid' && proof.type === 'worldid') {
     // Stub: any non-empty proof string for the matching nullifier "verifies".

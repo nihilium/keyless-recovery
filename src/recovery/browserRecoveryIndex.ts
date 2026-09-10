@@ -12,6 +12,15 @@ export interface RecoveryIndexEntry {
   epoch: number;
   recoveryOwner: Address;
   registeredAt: number;
+  /**
+   * The whole guardian set, ORDERED to match the seal's Shamir member indices (entry `i` is member
+   * `i + 1`). Recovery needs this to offer "pick 2 of your 3" and to translate that pick back into
+   * member indices — the seal itself deliberately records only each member's *domain*, since it
+   * travels as a bearer artifact and must not disclose the guardians.
+   */
+  emails: string[];
+  /** k — how many of `emails` a recovery must contact. */
+  threshold: number;
 }
 
 type IndexFile = Record<string, RecoveryIndexEntry>;
@@ -29,9 +38,13 @@ function load(): IndexFile {
   }
 }
 
-export function putRecoveryIndexEntry(email: string, entry: RecoveryIndexEntry) {
+/**
+ * Index one entry under *every* one of its guardian emails, so a recovery can be started from any
+ * of them. They all point at the same vaultId: a quorum is one seal, not n.
+ */
+export function putRecoveryIndexEntry(entry: RecoveryIndexEntry) {
   const index = load();
-  index[normalize(email)] = entry;
+  for (const email of entry.emails) index[normalize(email)] = entry;
   try {
     localStorage.setItem(KEY, JSON.stringify(index));
   } catch {
@@ -41,4 +54,20 @@ export function putRecoveryIndexEntry(email: string, entry: RecoveryIndexEntry) 
 
 export function lookupRecoveryIndexEntry(email: string): RecoveryIndexEntry | null {
   return load()[normalize(email)] ?? null;
+}
+
+/**
+ * The account's own guardian set, for the "you are protected by 2 of 3" panel.
+ *
+ * Keyed by account rather than email because that panel renders after a page reload, when the
+ * component no longer knows which address was typed. Browser-local, so it answers only where the
+ * account was set up — the on-chain module records one recovery key and nothing about the gate
+ * behind it, by design.
+ */
+export function findRecoveryIndexEntryByAccount(smartAccount: string): RecoveryIndexEntry | null {
+  const wanted = smartAccount.toLowerCase();
+  for (const entry of Object.values(load())) {
+    if (entry.smartAccount.toLowerCase() === wanted) return entry;
+  }
+  return null;
 }
