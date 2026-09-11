@@ -141,7 +141,8 @@ code {
   cursor: not-allowed;
 }
 
-input {
+input,
+select {
   flex: 1;
   min-width: 0;
   background: var(--bg-elevated);
@@ -154,7 +155,12 @@ input {
   transition: border-color 0.15s ease;
 }
 
-input:focus {
+select {
+  cursor: pointer;
+}
+
+input:focus,
+select:focus {
   outline: none;
   border-color: var(--accent);
 }

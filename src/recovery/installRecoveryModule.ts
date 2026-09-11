@@ -125,13 +125,23 @@ function buildUninstallCalldata(config: VetoConfigResponse): Hex {
   });
 }
 
+/**
+ * `pauseAuthority`/`abortAuthority`/`resumeMembers`/`resumeThreshold`/`pauseCeilingSeconds` are the
+ * relay's guardian keys and demo defaults — not something an individual account chooses. Only
+ * `timelockSeconds` is overridden here, per-account, from whatever RecoveryCard's own field holds.
+ */
+function withTimelock(config: VetoConfigResponse, timelockSeconds?: number): VetoConfigResponse {
+  return timelockSeconds === undefined ? config : { ...config, timelockSeconds: String(timelockSeconds) };
+}
+
 export async function installRecoveryModule(
   client: SmartWalletClientType,
   smartAccount: Address,
   recoveryOwner: Address,
   smartWalletType?: string,
+  timelockSeconds?: number,
 ): Promise<Hex> {
-  const config = await fetchVetoConfig();
+  const config = withTimelock(await fetchVetoConfig(), timelockSeconds);
   const data = buildInstallCalldata(config, recoveryOwner, smartWalletType);
   return client.sendTransaction({ to: smartAccount, data, value: 0n });
 }
@@ -152,8 +162,9 @@ export async function replaceRecoveryModule(
   smartAccount: Address,
   newRecoveryOwner: Address,
   smartWalletType?: string,
+  timelockSeconds?: number,
 ): Promise<Hex> {
-  const config = await fetchVetoConfig();
+  const config = withTimelock(await fetchVetoConfig(), timelockSeconds);
   return client.sendTransaction({
     calls: [
       { to: smartAccount, value: 0n, data: buildUninstallCalldata(config) },

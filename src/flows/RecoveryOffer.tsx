@@ -292,12 +292,24 @@ export function RecoveryOffer({
         </div>
       )}
 
-      {flow.state.phase === 'ready-to-complete' && (
+      {(flow.state.phase === 'ready-to-complete' || flow.state.phase === 'completing') && (
         <div className="stepper-step">
           <p>Timelock elapsed. Recovery is ready to complete.</p>
-          <button type="button" className="btn btn--primary" onClick={() => flow.complete()}>
-            Complete recovery
+          <button
+            type="button"
+            className="btn btn--primary"
+            disabled={flow.state.phase === 'completing'}
+            onClick={() => flow.complete()}
+          >
+            {flow.state.phase === 'completing' ? 'Completing…' : 'Complete recovery'}
           </button>
+          {flow.state.phase === 'completing' && (
+            <p className="hint">
+              {RECOVERY_PROVIDER_CAPABILITIES.onChainVeto
+                ? 'Submitting the transaction and waiting for it to be mined on Sepolia — this can take fifteen seconds or more.'
+                : 'Completing…'}
+            </p>
+          )}
         </div>
       )}
 

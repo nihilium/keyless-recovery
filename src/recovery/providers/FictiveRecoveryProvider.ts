@@ -17,8 +17,9 @@ import type {
 const RECORDS_KEY = 'keyless-recovery/fictive-records';
 const HANDLES_KEY = 'keyless-recovery/fictive-handles';
 
-// How long a recovery sits "timelocked" before it's ready to complete().
-const TIMELOCK_MS = 8_000;
+// How long a recovery sits "timelocked" before it's ready to complete(), when register() wasn't
+// given a timelockSeconds — matches the real provider's own default (server/.env's TIMELOCK_SECONDS).
+const DEFAULT_TIMELOCK_SECONDS = 60;
 
 interface HandleState {
   id: string;
@@ -98,12 +99,24 @@ function conditionSatisfiedByProof(condition: RecoveryCondition, proof: Conditio
 }
 
 export class FictiveRecoveryProvider implements RecoveryProvider {
-  async register(input: { account: AccountRef; condition: RecoveryCondition }): Promise<RecoveryRegistration> {
+  async register(input: {
+    account: AccountRef;
+    condition: RecoveryCondition;
+    timelockSeconds?: number;
+  }): Promise<RecoveryRegistration> {
+    // Guard here too, not just in the UI: a record with a zero/negative timelock would arm a handle
+    // that's either instantly complete or never satisfiable, and this is the one place that can
+    // still catch it if a future caller forgets to validate.
+    const timelockSeconds =
+      input.timelockSeconds !== undefined && input.timelockSeconds > 0
+        ? input.timelockSeconds
+        : DEFAULT_TIMELOCK_SECONDS;
     const record: RecoveryRecord = {
       id: crypto.randomUUID(),
       account: input.account,
       condition: input.condition,
       createdAt: Date.now(),
+      timelockSeconds,
     };
     const records = loadRecords();
     records.push(record);
@@ -123,13 +136,16 @@ export class FictiveRecoveryProvider implements RecoveryProvider {
       throw new Error('Recovery condition proof did not match the registered condition.');
     }
     const now = Date.now();
+    // Old localStorage records from before this field existed have no timelockSeconds — same
+    // default register() would have used for them.
+    const timelockMs = (record.timelockSeconds ?? DEFAULT_TIMELOCK_SECONDS) * 1000;
     const state: HandleState = {
       id: crypto.randomUUID(),
       recordId: record.id,
       armedAt: now,
-      untilTs: now + TIMELOCK_MS,
+      untilTs: now + timelockMs,
       paused: false,
-      remainingMs: TIMELOCK_MS,
+      remainingMs: timelockMs,
       vetoed: false,
       complete: false,
     };

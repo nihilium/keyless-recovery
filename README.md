@@ -132,7 +132,7 @@ Setup offers three gates, and they differ in what they survive rather than in ho
 | 3 emails | 2-of-3 | 3 paid seals | 2 concurrent round trips; survives 1 lost inbox |
 | 5 emails | 3-of-5 | 5 paid seals | 3 concurrent round trips; survives 2 lost inboxes |
 
-All three run through `@nihilium-recovery/condition-quorum`, which Shamir-splits the root secret and
+All three run through `@nihilium/recovery-condition-quorum`, which Shamir-splits the root secret and
 seals one share behind each email. **A quorum flattens to one seal and one recovery key**, which is
 why none of this touches the on-chain module: it still stores exactly one `recoveryOwner`, the
 `vaultId` is still the Privy user id, and IndexedDB still holds one blob per account.

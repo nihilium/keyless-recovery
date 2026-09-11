@@ -21,6 +21,7 @@ export type RecoveryFlowPhase =
   | 'ceremony'
   | 'armed'
   | 'ready-to-complete'
+  | 'completing'
   | 'vetoed'
   | 'complete'
   | 'error';
@@ -152,7 +153,11 @@ export function useRecoverFunds(provider: RecoveryProvider) {
   );
 
   const complete = useCallback(async () => {
-    if (!state.handle) return;
+    // The guard is on phase, not just state.handle: provider.complete() submits and waits for a
+    // mined Sepolia transaction (real gas, real cost), so a double-click landing before the button's
+    // `disabled` re-renders must not fire it twice.
+    if (!state.handle || state.phase === 'completing') return;
+    setState((s) => ({ ...s, phase: 'completing', error: null }));
     try {
       const { txHash } = await provider.complete(state.handle);
       stopPolling();
@@ -160,7 +165,7 @@ export function useRecoverFunds(provider: RecoveryProvider) {
     } catch (err) {
       setState((s) => ({ ...s, phase: 'error', error: (err as Error).message }));
     }
-  }, [provider, state.handle, stopPolling]);
+  }, [provider, state.handle, state.phase, stopPolling]);
 
   const reset = useCallback(() => {
     stopPolling();

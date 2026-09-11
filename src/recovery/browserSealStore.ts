@@ -7,7 +7,7 @@
 // device, and "recover onto a new device" — the entire point — would be impossible. The seal is a
 // bearer artifact; holding it still gets you nothing without satisfying the identity gate and
 // surviving the on-chain veto.
-import type { SealBlob, SealStore, SealRef } from '@nihilium-recovery/core';
+import type { SealBlob, SealStore, SealRef } from '@nihilium/recovery-core';
 
 const BACKEND_URL = (import.meta.env.VITE_RECOVERY_BACKEND_URL as string | undefined) ?? 'http://localhost:8787';
 const DB_NAME = 'keyless-recovery';

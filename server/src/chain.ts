@@ -1,7 +1,7 @@
 import { createPublicClient, createWalletClient, http, getContract, type Address } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { sepolia } from "viem/chains";
-import { recoveryModuleAbi, recoveryModuleAddress, VetoStateOrdinal } from "@nihilium-recovery/onchain-evm";
+import { recoveryModuleAbi, recoveryModuleAddress, VetoStateOrdinal } from "@nihilium/recovery-onchain-evm";
 import { config } from "./config.js";
 
 export const RECOVERY_MODULE_ADDRESS = recoveryModuleAddress(config.networkId) as Address;

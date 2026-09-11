@@ -64,6 +64,11 @@ export interface RecoveryRecord {
   account: AccountRef;
   condition: RecoveryCondition;
   createdAt: number;
+  /**
+   * Set by providers that persist the timelock on the record itself (fictive) rather than baking it
+   * into on-chain state (nihilium). See register()'s `timelockSeconds`.
+   */
+  timelockSeconds?: number;
 }
 
 export interface RecoveryRegistration {
@@ -119,7 +124,23 @@ export interface RecoveryProvider {
    *   nihilium: create a seal gated by condition; register rk as recovery
    *             authority on the account
    */
-  register(input: { account: AccountRef; condition: RecoveryCondition }): Promise<RecoveryRegistration>;
+  register(input: {
+    account: AccountRef;
+    condition: RecoveryCondition;
+    /**
+     * How long a future recovery attempt must sit timelocked before it can complete, in seconds.
+     * Optional; each provider defines its own default when omitted.
+     *   fictive:  stored on the record, applied when initiate() arms the handle.
+     *   nihilium: NOT consulted here — ignored by register() itself. Its timelock is baked into the
+     *             on-chain module's config at install time, which the caller (RecoveryCard) sets via
+     *             a separate, direct call to installRecoveryModule()/replaceRecoveryModule() right
+     *             after register() returns — the same place the rest of the veto config already
+     *             comes from. Kept on this shared interface anyway so the UI has one field regardless
+     *             of which provider is bound, and honestly documented here rather than silently
+     *             doing nothing.
+     */
+    timelockSeconds?: number;
+  }): Promise<RecoveryRegistration>;
 
   /**
    * LOOKUP — does a recovery exist for this input? Drives the email lookup

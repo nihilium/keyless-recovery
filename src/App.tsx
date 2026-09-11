@@ -49,7 +49,7 @@ function TopBar({ onLogout }: { onLogout: () => void }) {
 
 function Wallet({ onLogout }: { onLogout: () => void }) {
   const [seededEmail, setSeededEmail] = useState<string | null>(null);
-  const { address } = useAppSmartAccount();
+  const { address, recoveredAway } = useAppSmartAccount();
   const auth = useAppAuth();
   // Backend-answered: any smart account this signed-in wallet controls via a completed recovery.
   const { accounts: recoveredAccounts, refresh: refreshRecovered } = useRecoveredAccounts(auth.user?.eoa ?? null);
@@ -57,6 +57,11 @@ function Wallet({ onLogout }: { onLogout: () => void }) {
   // me this" — a per-browser preference, not a deletion.
   const { isDismissed, dismiss, restoreAll, dismissedCount } = useDismissedAccounts(auth.user?.eoa ?? null);
   const visibleRecoveredAccounts = recoveredAccounts.filter((r) => !isDismissed(r.account));
+  // Recovery setup installs a module on a Privy-provisioned smart account, and Privy only
+  // provisions one for its own embedded wallets — an externally-connected wallet (MetaMask, etc.)
+  // never gets one, no matter how the Dashboard is configured. Offering the form there would be a
+  // dead end dressed up as a feature, not a blocked-but-fixable state.
+  const canOfferRecoverySetup = recoveredAway !== true && !auth.user?.isExternalWallet;
 
   return (
     <div className="wallet">
@@ -80,8 +85,14 @@ function Wallet({ onLogout }: { onLogout: () => void }) {
           </p>
         )}
         {/* Keyed on the account: switching identity (the loss lab) must reset this to "not
-            protected" rather than carry the previous account's status over to a new one. */}
-        <RecoveryCard key={address ?? 'none'} onRegistered={setSeededEmail} />
+            protected" rather than carry the previous account's status over to a new one.
+            Hidden once recoveredAway is true: every action the card offers — protect, replace,
+            even the "Protected" summary itself — goes through Privy's smart-wallet client, which
+            signs against a root validator this account no longer has. There is nothing left in
+            here that could succeed; AccountCard's own banner already explains why.
+            Hidden for an externally-connected wallet for the same reason, one step earlier: there
+            is no smart account at all to install the module on, and there never will be. */}
+        {canOfferRecoverySetup && <RecoveryCard key={address ?? 'none'} onRegistered={setSeededEmail} />}
         {import.meta.env.DEV && <RecoveryLossLab seededEmail={seededEmail ?? undefined} />}
       </main>
     </div>

@@ -14,7 +14,7 @@ import {
   domainVerdict,
   type DkimDomainCheck,
   type DkimDomainVerdict,
-} from '@nihilium-recovery/resolver-dkim';
+} from '@nihilium/recovery-resolver-dkim';
 
 const EMAIL_SERVICE_URL =
   (import.meta.env.VITE_NIHILIUM_EMAIL_SERVICE_URL as string | undefined) ?? 'https://zkemail.nihilium.io';

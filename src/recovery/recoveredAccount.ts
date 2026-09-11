@@ -23,14 +23,16 @@ import { concatHex, pad, toHex } from 'viem';
 import { createSmartAccountClient } from 'permissionless';
 import { toKernelSmartAccount } from 'permissionless/accounts';
 import { createPimlicoClient } from 'permissionless/clients/pimlico';
+// Canonical in onchain.ts, not redefined here: the check that flags a Privy-derived account as
+// recovered-away (AccountCard) needs the same address as the client that actually drives a
+// recovered account (below), and two copies of the same magic address is how they'd drift.
+import { OWNABLE_VALIDATOR_ADDRESS } from './onchain';
 
 const RPC_URL =
   (import.meta.env.VITE_SEPOLIA_RPC_URL as string | undefined) ?? 'https://ethereum-sepolia-rpc.publicnode.com';
 // The same public Pimlico endpoint the Privy dashboard is configured with.
 const BUNDLER_URL =
   (import.meta.env.VITE_BUNDLER_URL as string | undefined) ?? 'https://public.pimlico.io/v2/11155111/rpc';
-
-export const OWNABLE_VALIDATOR_ADDRESS: Address = '0x2483DA3A338895199E5e538530213157e931Bf06';
 
 const publicClient = createPublicClient({ chain: sepolia, transport: http(RPC_URL) });
 

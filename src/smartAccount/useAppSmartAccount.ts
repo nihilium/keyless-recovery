@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react';
-import type { Address } from 'viem';
+import { getAddress, type Address } from 'viem';
 import { useAppAuth, isPrivyConfigured } from '../auth/login';
 import { createStub7702Adapter } from './stub7702';
 import { useKernelSmartWallet } from './useKernelSmartWallet';
 import type { DelegationStatus } from './SmartAccountAdapter';
+import { RECOVERY_PROVIDER_CAPABILITIES } from '../recovery/RecoveryContext';
+import { rootValidatorOf, OWNABLE_VALIDATOR_ADDRESS } from '../recovery/onchain';
 
 export interface AppSmartAccount {
   loading: boolean;
@@ -18,6 +20,16 @@ export interface AppSmartAccount {
    * Dashboard — without this the UI just span on "Setting up account…" forever with no error.
    */
   unavailableReason: string | null;
+  /**
+   * True once this smart account's Kernel root validator has been promoted to OwnableValidator —
+   * i.e. a recovery executed and "Revoke old key" ran. Privy derives this address from the
+   * embedded-wallet key alone and never checks on-chain state, so it keeps presenting the account as
+   * this session's to control forever; this is the one place in the app that actually asks the chain.
+   *
+   * `null` means "not applicable" (fictive mode, no smart account yet) or "not answered yet" — both
+   * read the same as "not recovered away" everywhere this is consumed.
+   */
+  recoveredAway: boolean | null;
 }
 
 // Simulated "provisioning" latency so onboarding has something to show —
@@ -28,6 +40,9 @@ const SETUP_DELAY_MS = 1100;
 // How long to wait for Privy to hand over a smart-wallet client before calling it unavailable.
 const SMART_WALLET_TIMEOUT_MS = 8000;
 
+// How often to re-read the account's root validator. Cheap single-slot read; no need to be tighter.
+const ROOT_VALIDATOR_POLL_MS = 12_000;
+
 function useStubSmartAccount(): AppSmartAccount {
   const { user } = useAppAuth();
   const [state, setState] = useState<AppSmartAccount>({
@@ -37,6 +52,7 @@ function useStubSmartAccount(): AppSmartAccount {
     delegationStatus: null,
     address: null,
     unavailableReason: null,
+    recoveredAway: null,
   });
 
   useEffect(() => {
@@ -48,6 +64,7 @@ function useStubSmartAccount(): AppSmartAccount {
         delegationStatus: null,
         address: null,
         unavailableReason: null,
+        recoveredAway: null,
       });
       return;
     }
@@ -61,6 +78,7 @@ function useStubSmartAccount(): AppSmartAccount {
       delegationStatus: null,
       address: null,
       unavailableReason: null,
+      recoveredAway: null,
     });
     const adapter = createStub7702Adapter(user.eoa);
     const timer = setTimeout(async () => {
@@ -69,7 +87,15 @@ function useStubSmartAccount(): AppSmartAccount {
         adapter.getDelegationStatus(),
       ]);
       if (!cancelled) {
-        setState({ loading: false, eoa, smartAccount, delegationStatus, address: smartAccount, unavailableReason: null });
+        setState({
+          loading: false,
+          eoa,
+          smartAccount,
+          delegationStatus,
+          address: smartAccount,
+          unavailableReason: null,
+          recoveredAway: null,
+        });
       }
     }, SETUP_DELAY_MS);
     return () => {
@@ -86,6 +112,7 @@ function useRealSmartAccount(): AppSmartAccount {
   const { user } = useAppAuth();
   const { smartAccount } = useKernelSmartWallet();
   const [timedOut, setTimedOut] = useState(false);
+  const [recoveredAway, setRecoveredAway] = useState<boolean | null>(null);
 
   useEffect(() => {
     if (!user || smartAccount) {
@@ -96,6 +123,30 @@ function useRealSmartAccount(): AppSmartAccount {
     return () => clearTimeout(timer);
   }, [user, smartAccount]);
 
+  // Independent of the timeout above: this is the one on-chain check in the whole Privy path,
+  // asking "does the key this session is about to sign with still control the account", which
+  // nothing else here ever does.
+  useEffect(() => {
+    if (!RECOVERY_PROVIDER_CAPABILITIES.onChainVeto || !smartAccount) {
+      setRecoveredAway(null);
+      return;
+    }
+    let cancelled = false;
+    const check = () =>
+      rootValidatorOf(smartAccount)
+        .then((root) => {
+          if (cancelled) return;
+          setRecoveredAway(root !== null && getAddress(root) === getAddress(OWNABLE_VALIDATOR_ADDRESS));
+        })
+        .catch(() => !cancelled && setRecoveredAway(null));
+    check();
+    const timer = setInterval(check, ROOT_VALIDATOR_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [smartAccount]);
+
   if (!user) {
     return {
       loading: false,
@@ -104,6 +155,7 @@ function useRealSmartAccount(): AppSmartAccount {
       delegationStatus: null,
       address: null,
       unavailableReason: null,
+      recoveredAway: null,
     };
   }
 
@@ -115,6 +167,7 @@ function useRealSmartAccount(): AppSmartAccount {
       delegationStatus: 'smart-wallet',
       address: smartAccount,
       unavailableReason: null,
+      recoveredAway,
     };
   }
 
@@ -129,6 +182,7 @@ function useRealSmartAccount(): AppSmartAccount {
       address: user.eoa,
       unavailableReason:
         'Privy returned no smart wallet. Enable smart wallets (provider: Kernel) for Sepolia in the Privy Dashboard, including a bundler URL.',
+      recoveredAway: null,
     };
   }
 
@@ -139,6 +193,7 @@ function useRealSmartAccount(): AppSmartAccount {
     delegationStatus: null,
     address: null,
     unavailableReason: null,
+    recoveredAway: null,
   };
 }
 

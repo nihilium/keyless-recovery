@@ -23,6 +23,14 @@ export interface AppAuthUser {
   loginEmail: string | null;
   /** How this session was authenticated, for display ("Google", "Email", "Wallet", …). */
   loginLabel: string;
+  /**
+   * True when this session's wallet was connected externally (MetaMask, Rainbow, WalletConnect, …)
+   * rather than created by Privy as an embedded wallet. Privy only provisions a Kernel smart wallet
+   * for its own embedded wallets — an externally connected one never gets one, no matter what the
+   * Privy Dashboard is configured to do — so on-chain recovery (which installs a module on that
+   * smart account) is structurally unavailable here, not just pending a config toggle.
+   */
+  isExternalWallet: boolean;
 }
 
 export interface AppAuth {
@@ -56,6 +64,9 @@ function generateDevUser(): AppAuthUser {
     eoa: privateKeyToAddress(privateKey),
     loginEmail: null,
     loginLabel: 'Dev identity',
+    // The dev fallback stands in for an embedded wallet (it's what runs when there's no Privy app
+    // configured at all), never for an externally-connected one — recovery stays offered here.
+    isExternalWallet: false,
   };
 }
 
@@ -96,6 +107,21 @@ function resolveLogin(user: PrivyUser): { loginEmail: string | null; loginLabel:
   return { loginEmail: null, loginLabel: 'Privy' };
 }
 
+/** `walletClientType` values for wallets Privy itself created and custodies (embedded wallets). */
+const EMBEDDED_WALLET_CLIENT_TYPES = new Set(['privy', 'privy-v2']);
+
+/**
+ * True when `user.wallet` was connected from outside (MetaMask, Rainbow, WalletConnect, …) rather
+ * than created by Privy. This is the one field Privy's own SDK exposes for the distinction — see
+ * `Wallet.walletClientType` in `@privy-io/react-auth`: `'privy'`/`'privy-v2'` for an embedded
+ * wallet, anything else for an external one. No wallet at all (still finishing sign-in) reads as
+ * "not external" rather than blocking on an unknown state.
+ */
+function isExternalWallet(user: PrivyUser): boolean {
+  const clientType = user.wallet?.walletClientType;
+  return clientType != null && !EMBEDDED_WALLET_CLIENT_TYPES.has(clientType);
+}
+
 function usePrivyAppAuth(): AppAuth {
   const { ready, authenticated, user, login, logout, getAccessToken } = usePrivy();
   return {
@@ -106,6 +132,7 @@ function usePrivyAppAuth(): AppAuth {
           userId: user.id,
           eoa: (user.wallet?.address ?? '0x0') as Address,
           ...resolveLogin(user),
+          isExternalWallet: isExternalWallet(user),
         }
       : null,
     login: () => login(),

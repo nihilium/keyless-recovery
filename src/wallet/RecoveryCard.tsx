@@ -25,14 +25,38 @@ interface Guardians {
   pauseAuthority: string;
   abortAuthority: string;
   resumeMembers: string[];
-  timelockSeconds: string;
 }
+
+/** Default selection — one minute, matching the real provider's own server default. */
+const DEFAULT_TIMELOCK_SECONDS = 60;
+
+/**
+ * Recovery timelock choices offered in the "Protect account" form. A fixed list rather than free
+ * text: the 5-second option exists purely so a recorded demo doesn't have to sit through a real
+ * wait, and a closed set is what keeps that from being mistaken for a serious setting — free text
+ * would put "5" and "5 minutes of actual protection" one typo apart.
+ */
+const TIMELOCK_PRESETS = [
+  { label: '5 seconds — video demo only', seconds: 5 },
+  { label: '1 minute', seconds: DEFAULT_TIMELOCK_SECONDS },
+  { label: '1 hour', seconds: 3_600 },
+  { label: '1 day', seconds: 86_400 },
+  { label: '1 week', seconds: 604_800 },
+  { label: '2 weeks', seconds: 1_209_600 },
+] as const;
 
 /** "60 seconds" / "4 minutes" / "2 hours" — the veto clock is wall-clock, so show it as a duration. */
 function formatDuration(seconds: string): string {
   const total = Number(seconds);
   if (!Number.isFinite(total) || total <= 0) return `${seconds} seconds`;
-  for (const [unit, size] of [['hour', 3600], ['minute', 60]] as const) {
+  // Largest unit first, so a 2-week timelock reads as "2 weeks" rather than "336 hours" — the
+  // presets above now reach that far, which the original hour/minute-only version never had to.
+  for (const [unit, size] of [
+    ['week', 604_800],
+    ['day', 86_400],
+    ['hour', 3_600],
+    ['minute', 60],
+  ] as const) {
     if (total >= size && total % size === 0) {
       const n = total / size;
       return `${n} ${unit}${n === 1 ? '' : 's'}`;
@@ -55,6 +79,8 @@ export function RecoveryCard({ onRegistered }: { onRegistered: (email: string | 
   /** The registered gate, for the protected view. Browser-local; null if set up elsewhere. */
   const [gate, setGate] = useState<{ emails: string[]; threshold: number } | null>(null);
   const [nullifierHash, setNullifierHash] = useState('');
+  /** How long a future recovery must wait before it can complete, in seconds — one of TIMELOCK_PRESETS. */
+  const [timelockSeconds, setTimelockSeconds] = useState<number>(DEFAULT_TIMELOCK_SECONDS);
   const [status, setStatus] = useState<Status>('idle');
   const [error, setError] = useState<string | null>(null);
   const [registeredEmail, setRegisteredEmail] = useState<string | null>(null);
@@ -91,6 +117,11 @@ export function RecoveryCard({ onRegistered }: { onRegistered: (email: string | 
   const duplicateEmail = findDuplicateEmail(emails.filter(Boolean));
   const emailsComplete = emails.every((e) => e.trim().length > 0);
 
+  // A dropdown over a fixed preset list can't actually produce an invalid value, but the check
+  // stays: GradualVeto.validate() rejects a zero timelock on-chain, and this is what that guard
+  // would look like if the list above it were ever misconfigured to include one.
+  const timelockValid = timelockSeconds > 0;
+
   // Asked before sealing because this is the only moment it can help: a share sealed against a
   // domain zkEmail cannot prove is a share nobody can ever open, and in a 2-of-3 that silently
   // costs the redundancy the user just paid for.
@@ -120,7 +151,6 @@ export function RecoveryCard({ onRegistered }: { onRegistered: (email: string | 
           pauseAuthority: c.pauseAuthority,
           abortAuthority: c.abortAuthority,
           resumeMembers: c.resumeMembers,
-          timelockSeconds: c.timelockSeconds,
         }),
       )
       .catch(() => setGuardians(null));
@@ -144,7 +174,7 @@ export function RecoveryCard({ onRegistered }: { onRegistered: (email: string | 
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!auth.user || !address || !eoa || blockedReason) return;
+    if (!auth.user || !address || !eoa || blockedReason || !timelockValid) return;
     setStatus('sealing');
     setError(null);
     try {
@@ -153,6 +183,7 @@ export function RecoveryCard({ onRegistered }: { onRegistered: (email: string | 
       const { providerMetadata } = await provider.register({
         account: { userId: auth.user.userId, eoa, smartAccount: smartAccount ?? address },
         condition,
+        timelockSeconds: timelockSeconds,
       });
 
       const recoveryOwner = providerMetadata?.recoveryOwner as `0x${string}` | undefined;
@@ -173,9 +204,9 @@ export function RecoveryCard({ onRegistered }: { onRegistered: (email: string | 
     // Rotating: uninstall + install in one UserOp, since the module has no setter and refuses a
     // second onInstall while a config exists.
     if (onChain?.installed) {
-      await replaceRecoveryModule(kernelClient, smartAccount, recoveryOwner, smartWalletType);
+      await replaceRecoveryModule(kernelClient, smartAccount, recoveryOwner, smartWalletType, timelockSeconds);
     } else {
-      await installRecoveryModule(kernelClient, smartAccount, recoveryOwner, smartWalletType);
+      await installRecoveryModule(kernelClient, smartAccount, recoveryOwner, smartWalletType, timelockSeconds);
     }
     setMode('view');
     finish();
@@ -241,6 +272,10 @@ export function RecoveryCard({ onRegistered }: { onRegistered: (email: string | 
             <div>
               <dt>Epoch</dt>
               <dd>{onChain.epoch.toString()}</dd>
+            </div>
+            <div>
+              <dt>Timelock</dt>
+              <dd>{formatDuration(onChain.timelockSeconds.toString())}</dd>
             </div>
             <div>
               <dt>Recovery in progress</dt>
@@ -327,6 +362,25 @@ export function RecoveryCard({ onRegistered }: { onRegistered: (email: string | 
         </div>
       )}
 
+      <label className="field">
+        <span className="field__label">Recovery timelock</span>
+        <select
+          value={timelockSeconds}
+          onChange={(e) => setTimelockSeconds(Number(e.target.value))}
+          disabled={status !== 'idle'}
+        >
+          {TIMELOCK_PRESETS.map((option) => (
+            <option key={option.seconds} value={option.seconds}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+        <span className="hint">
+          Once a recovery starts, it can't complete for {formatDuration(String(timelockSeconds))} —
+          time for you or a guardian to notice and abort it if it wasn't you.
+        </span>
+      </label>
+
       <form onSubmit={handleSubmit} className={tab === 'email' ? 'gate-form' : 'field-row'}>
         {tab === 'email' ? (
           <>
@@ -366,7 +420,8 @@ export function RecoveryCard({ onRegistered }: { onRegistered: (email: string | 
                 blockedReason !== null ||
                 !emailsComplete ||
                 duplicateEmail !== null ||
-                domains.blocking
+                domains.blocking ||
+                !timelockValid
               }
             >
               {status === 'sealing'
@@ -385,9 +440,11 @@ export function RecoveryCard({ onRegistered }: { onRegistered: (email: string | 
                         ? domains.checks.some((c) => c.state === 'checking')
                           ? 'Checking domains…'
                           : 'Fix the flagged domain'
-                        : mode === 'replacing'
-                        ? 'Seal & replace'
-                        : 'Protect account'}
+                        : !timelockValid
+                          ? 'Fix the timelock'
+                          : mode === 'replacing'
+                            ? 'Seal & replace'
+                            : 'Protect account'}
             </button>
             <p className="hint">
               Sealing is paid, once per guardian — {preset.n}{' '}
@@ -408,7 +465,7 @@ export function RecoveryCard({ onRegistered }: { onRegistered: (email: string | 
             <button
               type="submit"
               className="btn btn--primary"
-              disabled={status !== 'idle' || !address || blockedReason !== null}
+              disabled={status !== 'idle' || !address || blockedReason !== null || !timelockValid}
             >
               {status === 'sealing'
                 ? 'Sealing…'
@@ -416,9 +473,11 @@ export function RecoveryCard({ onRegistered }: { onRegistered: (email: string | 
                   ? mode === 'replacing'
                     ? 'Replacing…'
                     : 'Installing…'
-                  : mode === 'replacing'
-                    ? 'Seal & replace'
-                    : 'Protect account'}
+                  : !timelockValid
+                    ? 'Fix the timelock'
+                    : mode === 'replacing'
+                      ? 'Seal & replace'
+                      : 'Protect account'}
             </button>
           </>
         )}
@@ -563,10 +622,6 @@ function GuardianList({ guardians }: { guardians: Guardians }) {
         <li>
           <span className="guardians__role">Resume</span>
           <code>{guardians.resumeMembers.map((m) => truncateAddress(m)).join(', ')}</code>
-        </li>
-        <li>
-          <span className="guardians__role">Timelock</span>
-          <code>{formatDuration(guardians.timelockSeconds)}</code>
         </li>
       </ul>
     </div>

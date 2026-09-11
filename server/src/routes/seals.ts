@@ -8,8 +8,8 @@
 // The seal is a bearer artifact — whoever holds it can attempt a recovery, still subject to the
 // identity gate and the on-chain veto. This is the spec's "storage/provider" placement.
 import { Router } from "express";
-import { LocalSealStore } from "@nihilium-recovery/storage-local";
-import type { SealBlob } from "@nihilium-recovery/core";
+import { LocalSealStore } from "@nihilium/recovery-storage-local";
+import type { SealBlob } from "@nihilium/recovery-core";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { config } from "../config.js";

@@ -7,7 +7,7 @@
 // from the view entirely.
 import { Router } from "express";
 import { getAddress, parseAbiItem, type Address } from "viem";
-import { recoveryModuleAbi } from "@nihilium-recovery/onchain-evm";
+import { recoveryModuleAbi } from "@nihilium/recovery-onchain-evm";
 import { publicClient, RECOVERY_MODULE_ADDRESS } from "../chain.js";
 import { config } from "../config.js";
 import { requireAdminToken } from "../adminAuth.js";

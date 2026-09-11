@@ -5,16 +5,16 @@
 // The one exception is broadcasting transactions (see relay.ts): those cost gas a just-recovered
 // user doesn't have, and pause/abort are msg.sender-gated to guardian keys that must never ship to
 // a browser. Reads, signing and every ZK step happen here.
-import { RecoverySDK, generateRRS } from '@nihilium-recovery/core';
-import { EvmKeyAdapter, toEvmAddress } from '@nihilium-recovery/key-evm';
-import { ZKEmailConditionAdapter, type ZKEmailPhase } from '@nihilium-recovery/condition-zkemail';
+import { RecoverySDK, generateRRS } from '@nihilium/recovery-core';
+import { EvmKeyAdapter, toEvmAddress } from '@nihilium/recovery-key-evm';
+import { ZKEmailConditionAdapter, type ZKEmailPhase } from '@nihilium/recovery-condition-zkemail';
 import {
   quorumOf,
   QuorumIncompleteError,
   type QuorumConditionAdapter,
   type QuorumMember,
-} from '@nihilium-recovery/condition-quorum';
-import { NihiliumPaymentProviderClientAPIKEY_DO_NOT_USE, setApiEndpoint } from '@nihilium-recovery/nihilium';
+} from '@nihilium/recovery-condition-quorum';
+import { NihiliumPaymentProviderClientAPIKEY_DO_NOT_USE, setApiEndpoint } from '@nihilium/recovery-nihilium';
 import { hexToBytes, bytesToHex, type Address, type Hex } from 'viem';
 import type {
   RecoveryProvider,

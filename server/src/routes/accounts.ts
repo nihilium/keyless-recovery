@@ -9,7 +9,7 @@
 // question without needing any off-chain record of who recovered what.
 import { Router } from "express";
 import { getAddress, parseAbiItem, type Address } from "viem";
-import { recoveryModuleAbi } from "@nihilium-recovery/onchain-evm";
+import { recoveryModuleAbi } from "@nihilium/recovery-onchain-evm";
 import { publicClient, RECOVERY_MODULE_ADDRESS } from "../chain.js";
 import { RECOVERY_VALIDATOR_ADDRESS } from "../kernelValidator.js";
 import { config } from "../config.js";
